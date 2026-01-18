@@ -1,140 +1,217 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
-    <meta charset="UTF-8">
-    <title>Teachable Machine Image Model</title>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Teachable Machine Image Model</title>
 </head>
 
 <body>
-    <div><b>Teachable Machine Image Model</b></div>
-    <button type="button" onclick="init()">Start</button>
+  <div style="font-size:18px;"><b>Teachable Machine Image Model</b></div>
+  <button type="button" onclick="init()" style="margin:8px 0;">Start</button>
 
-    <div id="webcam-container"></div>
-    <div id="result" style="font-size:22px; font-weight:bold; margin:10px 0;"></div>
-    <div id="label-container"></div>
+  <div id="webcam-container"></div>
 
-    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@latest/dist/teachablemachine-image.min.js"></script>
+  <!-- 判定結果（色付き・枠付き） -->
+  <div id="result"
+       style="font-size:22px; font-weight:bold; margin:10px 0; padding:10px; border-radius:10px; display:inline-block; border:2px solid #b06000; background:#fff7e0; color:#b06000;">
+  </div>
 
-    <script type="text/javascript">
-        // ===== モデルURL =====
-        const URL = "https://teachablemachine.withgoogle.com/models/4BqvTJVgw/";
+  <!-- 各クラスの確率 -->
+  <div id="label-container" style="margin-top:6px;"></div>
 
-        let model, webcam, labelContainer, maxPredictions;
+  <!-- ログ -->
+  <div id="log" style="margin-top:12px; font-family:monospace; white-space:pre-line;"></div>
 
-        // ===== 設定 =====
-        const CONFIDENCE_THRESHOLD = 0.6; // 信頼度しきい値
-        const SMOOTHING_FRAMES = 12;      // 平均化フレーム数
-        const STABLE_REQUIRED = 6;        // 連続一致回数
-        const LOCK_MS = 1200;             // 確定後の固定時間(ms)
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@latest/dist/teachablemachine-image.min.js"></script>
 
-        // ===== 状態管理 =====
-        let predictionHistory = [];
-        let lastLabel = null;
-        let stableCount = 0;
+  <script type="text/javascript">
+    // ===== モデルURL =====
+    const URL = "https://teachablemachine.withgoogle.com/models/4BqvTJVgw/";
 
-        let lockedLabel = null;
-        let lockedConfidence = 0;
-        let lockUntil = 0;
+    let model, webcam, labelContainer, maxPredictions;
 
-        // ===== 初期化 =====
-        async function init() {
-            const modelURL = URL + "model.json";
-            const metadataURL = URL + "metadata.json";
+    // ===== 設定（バランス型：安定＋そこそこ速い） =====
+    const CONFIDENCE_THRESHOLD = 0.6; // 信頼度しきい値
+    const SMOOTHING_FRAMES = 12;      // 平均化フレーム数
+    const STABLE_REQUIRED = 6;        // 連続一致回数
+    const LOCK_MS = 1200;             // 確定後の固定時間(ms)
 
-            model = await tmImage.load(modelURL, metadataURL);
-            maxPredictions = model.getTotalClasses();
+    // ===== 状態管理 =====
+    let predictionHistory = [];
+    let lastLabel = null;
+    let stableCount = 0;
 
-            webcam = new tmImage.Webcam(200, 200, true);
-            await webcam.setup();
-            await webcam.play();
-            window.requestAnimationFrame(loop);
+    let lockedLabel = null;
+    let lockedConfidence = 0;
+    let lockUntil = 0;
 
-            document.getElementById("webcam-container").appendChild(webcam.canvas);
+    // ===== UI/アクション用 =====
+    let lastConfirmKey = ""; // 同じ確定を連打しないため
 
-            labelContainer = document.getElementById("label-container");
-            labelContainer.innerHTML = "";
-            for (let i = 0; i < maxPredictions; i++) {
-                labelContainer.appendChild(document.createElement("div"));
-            }
+    function setResultStyle(type) {
+      // type: "iphone" | "android" | "other" | "unknown" | "pending"
+      const resultDiv = document.getElementById("result");
+      const styles = {
+        iphone:  { bg: "#e8f0fe", fg: "#1a73e8", bd: "#1a73e8" },
+        android: { bg: "#e6f4ea", fg: "#188038", bd: "#188038" },
+        other:   { bg: "#f1f3f4", fg: "#3c4043", bd: "#3c4043" },
+        unknown: { bg: "#fce8e6", fg: "#d93025", bd: "#d93025" },
+        pending: { bg: "#fff7e0", fg: "#b06000", bd: "#b06000" }
+      };
+      const s = styles[type] || styles.pending;
+      resultDiv.style.background = s.bg;
+      resultDiv.style.color = s.fg;
+      resultDiv.style.border = `2px solid ${s.bd}`;
+    }
+
+    function labelToType(label) {
+      const name = (label || "").toLowerCase();
+      if (name.includes("iphone")) return "iphone";
+      if (name.includes("android")) return "android";
+      if (name.includes("other")) return "other";
+      return "pending";
+    }
+
+    // 確定時に枠を一瞬光らせる（音は鳴らさない）
+    function flashBorder() {
+      const resultDiv = document.getElementById("result");
+      resultDiv.style.boxShadow = "0 0 16px 6px rgba(255, 215, 0, 0.9)";
+      setTimeout(() => {
+        resultDiv.style.boxShadow = "none";
+      }, 250);
+    }
+
+    function appendLog(text) {
+      const logDiv = document.getElementById("log");
+      const ts = new Date().toLocaleTimeString();
+      logDiv.textContent = `[${ts}] ${text}\n` + (logDiv.textContent || "");
+    }
+
+    // ===== 初期化 =====
+    async function init() {
+      // Startを連打しても壊れないように初期化
+      predictionHistory = [];
+      lastLabel = null;
+      stableCount = 0;
+      lockedLabel = null;
+      lockedConfidence = 0;
+      lockUntil = 0;
+      lastConfirmKey = "";
+
+      const modelURL = URL + "model.json";
+      const metadataURL = URL + "metadata.json";
+
+      model = await tmImage.load(modelURL, metadataURL);
+      maxPredictions = model.getTotalClasses();
+
+      // Webcam
+      webcam = new tmImage.Webcam(240, 240, true);
+      await webcam.setup();
+      await webcam.play();
+      window.requestAnimationFrame(loop);
+
+      // DOM
+      const wc = document.getElementById("webcam-container");
+      wc.innerHTML = "";
+      wc.appendChild(webcam.canvas);
+
+      labelContainer = document.getElementById("label-container");
+      labelContainer.innerHTML = "";
+      for (let i = 0; i < maxPredictions; i++) {
+        labelContainer.appendChild(document.createElement("div"));
+      }
+
+      setResultStyle("pending");
+      document.getElementById("result").innerHTML = "判定：準備完了（Start後にカメラが動きます）";
+      appendLog("Start：モデル読み込み完了");
+    }
+
+    async function loop() {
+      webcam.update();
+      await predict();
+      window.requestAnimationFrame(loop);
+    }
+
+    // ===== 予測処理 =====
+    async function predict() {
+      const prediction = await model.predict(webcam.canvas);
+
+      // --- 生の確率表示 ---
+      for (let i = 0; i < maxPredictions; i++) {
+        labelContainer.childNodes[i].innerHTML =
+          `${prediction[i].className}: ${prediction[i].probability.toFixed(2)}`;
+      }
+
+      // --- 履歴に追加 ---
+      predictionHistory.push(prediction.map(p => p.probability));
+      if (predictionHistory.length > SMOOTHING_FRAMES) predictionHistory.shift();
+
+      // --- 平均確率計算 ---
+      let avgProbabilities = new Array(maxPredictions).fill(0);
+      for (let frame of predictionHistory) frame.forEach((p, i) => avgProbabilities[i] += p);
+      avgProbabilities = avgProbabilities.map(p => p / predictionHistory.length);
+
+      // --- 最大クラス ---
+      const maxIndex = avgProbabilities.indexOf(Math.max(...avgProbabilities));
+      const maxProbability = avgProbabilities[maxIndex];
+      const label = model.getClassLabels()[maxIndex];
+
+      const resultDiv = document.getElementById("result");
+      const now = Date.now();
+
+      // ===== ロック中 =====
+      if (now < lockUntil && lockedLabel !== null) {
+        setResultStyle(labelToType(lockedLabel));
+        resultDiv.innerHTML =
+          `判定：<b>${lockedLabel}</b>（信頼度 ${(lockedConfidence * 100).toFixed(1)}%）［固定中］`;
+        return;
+      }
+
+      // ===== しきい値未満 =====
+      if (maxProbability < CONFIDENCE_THRESHOLD) {
+        lockedLabel = null;
+        stableCount = 0;
+        lastLabel = null;
+
+        setResultStyle("unknown");
+        resultDiv.innerHTML = "判定：不明（信頼度不足）";
+        return;
+      }
+
+      // ===== 安定判定 =====
+      if (label === lastLabel) {
+        stableCount += 1;
+      } else {
+        lastLabel = label;
+        stableCount = 1;
+      }
+
+      setResultStyle("pending");
+      resultDiv.innerHTML =
+        `判定中：<b>${label}</b>（信頼度 ${(maxProbability * 100).toFixed(1)}%） ` +
+        `安定度 ${stableCount}/${STABLE_REQUIRED}`;
+
+      // ===== 確定 =====
+      if (stableCount >= STABLE_REQUIRED) {
+        lockedLabel = label;
+        lockedConfidence = maxProbability;
+        lockUntil = now + LOCK_MS;
+
+        setResultStyle(labelToType(lockedLabel));
+        resultDiv.innerHTML =
+          `判定：<b>${lockedLabel}</b>（信頼度 ${(lockedConfidence * 100).toFixed(1)}%）［確定］`;
+
+        // 確定した瞬間だけ（固定中に連打しない）
+        const confirmKey = `${lockedLabel}-${Math.round(lockedConfidence * 1000)}`;
+        if (confirmKey !== lastConfirmKey) {
+          lastConfirmKey = confirmKey;
+          flashBorder(); // 枠が光る
+          appendLog(`確定: ${lockedLabel} / ${(lockedConfidence * 100).toFixed(1)}%`);
         }
-
-        async function loop() {
-            webcam.update();
-            await predict();
-            window.requestAnimationFrame(loop);
-        }
-
-        // ===== 予測処理 =====
-        async function predict() {
-            const prediction = await model.predict(webcam.canvas);
-
-            // --- 生の確率表示 ---
-            for (let i = 0; i < maxPredictions; i++) {
-                labelContainer.childNodes[i].innerHTML =
-                    `${prediction[i].className}: ${prediction[i].probability.toFixed(2)}`;
-            }
-
-            // --- 履歴に追加 ---
-            predictionHistory.push(prediction.map(p => p.probability));
-            if (predictionHistory.length > SMOOTHING_FRAMES) {
-                predictionHistory.shift();
-            }
-
-            // --- 平均確率計算 ---
-            let avgProbabilities = new Array(maxPredictions).fill(0);
-            for (let frame of predictionHistory) {
-                frame.forEach((p, i) => avgProbabilities[i] += p);
-            }
-            avgProbabilities = avgProbabilities.map(p => p / predictionHistory.length);
-
-            // --- 最大クラス ---
-            let maxIndex = avgProbabilities.indexOf(Math.max(...avgProbabilities));
-            let maxProbability = avgProbabilities[maxIndex];
-            let label = model.getClassLabels()[maxIndex];
-
-            const resultDiv = document.getElementById("result");
-            const now = Date.now();
-
-            // ===== ロック中 =====
-            if (now < lockUntil && lockedLabel !== null) {
-                resultDiv.innerHTML =
-                    `判定：<b>${lockedLabel}</b>（信頼度 ${(lockedConfidence * 100).toFixed(1)}%）［固定中］`;
-                return;
-            }
-
-            // ===== しきい値未満 =====
-            if (maxProbability < CONFIDENCE_THRESHOLD) {
-                lockedLabel = null;
-                stableCount = 0;
-                lastLabel = null;
-                resultDiv.innerHTML = "判定：不明（信頼度不足）";
-                return;
-            }
-
-            // ===== 安定判定 =====
-            if (label === lastLabel) {
-                stableCount += 1;
-            } else {
-                lastLabel = label;
-                stableCount = 1;
-            }
-
-            resultDiv.innerHTML =
-                `判定中：<b>${label}</b>（信頼度 ${(maxProbability * 100).toFixed(1)}%） ` +
-                `安定度 ${stableCount}/${STABLE_REQUIRED}`;
-
-            // ===== 確定 =====
-            if (stableCount >= STABLE_REQUIRED) {
-                lockedLabel = label;
-                lockedConfidence = maxProbability;
-                lockUntil = now + LOCK_MS;
-
-                resultDiv.innerHTML =
-                    `判定：<b>${lockedLabel}</b>（信頼度 ${(lockedConfidence * 100).toFixed(1)}%）［確定］`;
-            }
-        }
-    </script>
+      }
+    }
+  </script>
 </body>
 </html>
-
