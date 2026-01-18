@@ -33,10 +33,14 @@
     let model, webcam, labelContainer, maxPredictions;
 
     // ===== 設定（バランス型：安定＋そこそこ速い） =====
-    const CONFIDENCE_THRESHOLD = 0.85; // 信頼度しきい値
-    const SMOOTHING_FRAMES = 20;      // 平均化フレーム数
-    const STABLE_REQUIRED = 10;        // 連続一致回数
-    const LOCK_MS = 1800;             // 確定後の固定時間(ms)
+    const CONFIDENCE_THRESHOLD = 0.6; // 確定判定のしきい値
+    const SMOOTHING_FRAMES = 18;      // 平均化フレーム数（判定時間やや長め）
+    const STABLE_REQUIRED = 8;        // 連続一致回数（判定時間やや長め）
+    const LOCK_MS = 1500;             // 確定後の固定時間(ms)
+
+    // 「近づけて」判定用（入力品質）
+    const TOO_FAR_THRESHOLD = 0.40;        // これ未満が続くと「近づけて」を出す
+    const HINT_AFTER_UNKNOWN_FRAMES = 25;  // 連続Nフレーム不明なら「近づけて」
 
     // ===== 状態管理 =====
     let predictionHistory = [];
@@ -47,17 +51,20 @@
     let lockedConfidence = 0;
     let lockUntil = 0;
 
+    let unknownCount = 0; // 不明が続いた回数
+
     // ===== UI/アクション用 =====
     let lastConfirmKey = ""; // 同じ確定を連打しないため
 
     function setResultStyle(type) {
-      // type: "iphone" | "android" | "other" | "unknown" | "pending"
+      // type: "iphone" | "android" | "other" | "unknown" | "pending" | "hint"
       const resultDiv = document.getElementById("result");
       const styles = {
         iphone:  { bg: "#e8f0fe", fg: "#1a73e8", bd: "#1a73e8" },
         android: { bg: "#e6f4ea", fg: "#188038", bd: "#188038" },
         other:   { bg: "#f1f3f4", fg: "#3c4043", bd: "#3c4043" },
         unknown: { bg: "#fce8e6", fg: "#d93025", bd: "#d93025" },
+        hint:    { bg: "#fff7e0", fg: "#b06000", bd: "#b06000" },
         pending: { bg: "#fff7e0", fg: "#b06000", bd: "#b06000" }
       };
       const s = styles[type] || styles.pending;
@@ -74,7 +81,7 @@
       return "pending";
     }
 
-    // 確定時に枠を一瞬光らせる（音は鳴らさない）
+    // 確定時に枠を一瞬光らせる（音なし）
     function flashBorder() {
       const resultDiv = document.getElementById("result");
       resultDiv.style.boxShadow = "0 0 16px 6px rgba(255, 215, 0, 0.9)";
@@ -95,9 +102,12 @@
       predictionHistory = [];
       lastLabel = null;
       stableCount = 0;
+
       lockedLabel = null;
       lockedConfidence = 0;
       lockUntil = 0;
+
+      unknownCount = 0;
       lastConfirmKey = "";
 
       const modelURL = URL + "model.json";
@@ -106,13 +116,11 @@
       model = await tmImage.load(modelURL, metadataURL);
       maxPredictions = model.getTotalClasses();
 
-      // Webcam
       webcam = new tmImage.Webcam(240, 240, true);
       await webcam.setup();
       await webcam.play();
       window.requestAnimationFrame(loop);
 
-      // DOM
       const wc = document.getElementById("webcam-container");
       wc.innerHTML = "";
       wc.appendChild(webcam.canvas);
@@ -123,8 +131,8 @@
         labelContainer.appendChild(document.createElement("div"));
       }
 
-      setResultStyle("pending");
-      document.getElementById("result").innerHTML = "判定：準備完了（Start後にカメラが動きます）";
+      setResultStyle("hint");
+      document.getElementById("result").innerHTML = "判定：準備完了";
       appendLog("Start：モデル読み込み完了");
     }
 
@@ -169,7 +177,28 @@
         return;
       }
 
-      // ===== しきい値未満 =====
+      // ===== 「近づけて」判定（入力品質が低い） =====
+      // 1) 最大確率がかなり低い（遠い・暗い・ブレてるなど）
+      // 2) 不明が一定フレーム続く
+      const isVeryLowConfidence = maxProbability < TOO_FAR_THRESHOLD;
+
+      // しきい値未満は「不明」扱いとしてカウント
+      if (maxProbability < CONFIDENCE_THRESHOLD) unknownCount += 1;
+      else unknownCount = 0;
+
+      if (isVeryLowConfidence || unknownCount >= HINT_AFTER_UNKNOWN_FRAMES) {
+        // 確定系はリセット
+        lockedLabel = null;
+        stableCount = 0;
+        lastLabel = null;
+
+        setResultStyle("hint");
+        resultDiv.innerHTML = "スマホをカメラに近づけてください";
+        return;
+      }
+
+      // ===== しきい値未満（ただの不明） =====
+      // ※ ここに来るのは maxProbability < 0.6 だけど「近づけて」条件には当たらないケース
       if (maxProbability < CONFIDENCE_THRESHOLD) {
         lockedLabel = null;
         stableCount = 0;
@@ -181,12 +210,8 @@
       }
 
       // ===== 安定判定 =====
-      if (label === lastLabel) {
-        stableCount += 1;
-      } else {
-        lastLabel = label;
-        stableCount = 1;
-      }
+      if (label === lastLabel) stableCount += 1;
+      else { lastLabel = label; stableCount = 1; }
 
       setResultStyle("pending");
       resultDiv.innerHTML =
@@ -215,6 +240,3 @@
   </script>
 </body>
 </html>
-
-
-
