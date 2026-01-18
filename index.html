@@ -33,7 +33,7 @@
     let model, webcam, labelContainer, maxPredictions;
 
     // ===== 設定（バランス型：安定＋そこそこ速い） =====
-    const CONFIDENCE_THRESHOLD = 0.8; // 信頼度しきい値
+    const CONFIDENCE_THRESHOLD = 0.85; // 信頼度しきい値
     const SMOOTHING_FRAMES = 20;      // 平均化フレーム数
     const STABLE_REQUIRED = 10;        // 連続一致回数
     const LOCK_MS = 1800;             // 確定後の固定時間(ms)
@@ -215,5 +215,6 @@
   </script>
 </body>
 </html>
+
 
 
