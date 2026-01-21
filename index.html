@@ -12,37 +12,31 @@
 
   <div id="webcam-container"></div>
 
-  <!-- 判定結果（色付き・枠付き） -->
   <div id="result"
        style="font-size:22px; font-weight:bold; margin:10px 0; padding:10px; border-radius:10px; display:inline-block; border:2px solid #b06000; background:#fff7e0; color:#b06000;">
   </div>
 
-  <!-- 各クラスの確率 -->
   <div id="label-container" style="margin-top:6px;"></div>
 
-  <!-- ログ -->
   <div id="log" style="margin-top:12px; font-family:monospace; white-space:pre-line;"></div>
 
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@latest/dist/teachablemachine-image.min.js"></script>
 
   <script type="text/javascript">
-    // ===== モデルURL =====
+    
     const URL = "https://teachablemachine.withgoogle.com/models/3Dnz6Yb-y/";
 
     let model, webcam, labelContainer, maxPredictions;
 
-    // ===== 設定（バランス型：安定＋そこそこ速い） =====
-    const CONFIDENCE_THRESHOLD = 0.6; // 確定判定のしきい値
-    const SMOOTHING_FRAMES = 18;      // 平均化フレーム数（判定時間やや長め）
-    const STABLE_REQUIRED = 8;        // 連続一致回数（判定時間やや長め）
-    const LOCK_MS = 1500;             // 確定後の固定時間(ms)
+    const CONFIDENCE_THRESHOLD = 0.6; 
+    const SMOOTHING_FRAMES = 18;      
+    const STABLE_REQUIRED = 8;        
+    const LOCK_MS = 1500;             
 
-    // 「近づけて」判定用（入力品質）
-    const TOO_FAR_THRESHOLD = 0.40;        // これ未満が続くと「近づけて」を出す
-    const HINT_AFTER_UNKNOWN_FRAMES = 25;  // 連続Nフレーム不明なら「近づけて」
+    const TOO_FAR_THRESHOLD = 0.40;       
+    const HINT_AFTER_UNKNOWN_FRAMES = 25;  
 
-    // ===== 状態管理 =====
     let predictionHistory = [];
     let lastLabel = null;
     let stableCount = 0;
@@ -51,10 +45,9 @@
     let lockedConfidence = 0;
     let lockUntil = 0;
 
-    let unknownCount = 0; // 不明が続いた回数
+    let unknownCount = 0; 
 
-    // ===== UI/アクション用 =====
-    let lastConfirmKey = ""; // 同じ確定を連打しないため
+    let lastConfirmKey = ""; 
 
     function setResultStyle(type) {
       // type: "iphone" | "android" | "other" | "unknown" | "pending" | "hint"
@@ -81,7 +74,6 @@
       return "pending";
     }
 
-    // 確定時に枠を一瞬光らせる（音なし）
     function flashBorder() {
       const resultDiv = document.getElementById("result");
       resultDiv.style.boxShadow = "0 0 16px 6px rgba(255, 215, 0, 0.9)";
@@ -96,9 +88,8 @@
       logDiv.textContent = `[${ts}] ${text}\n` + (logDiv.textContent || "");
     }
 
-    // ===== 初期化 =====
     async function init() {
-      // Startを連打しても壊れないように初期化
+      
       predictionHistory = [];
       lastLabel = null;
       stableCount = 0;
@@ -142,26 +133,20 @@
       window.requestAnimationFrame(loop);
     }
 
-    // ===== 予測処理 =====
     async function predict() {
       const prediction = await model.predict(webcam.canvas);
-
-      // --- 生の確率表示 ---
       for (let i = 0; i < maxPredictions; i++) {
         labelContainer.childNodes[i].innerHTML =
           `${prediction[i].className}: ${prediction[i].probability.toFixed(2)}`;
       }
 
-      // --- 履歴に追加 ---
       predictionHistory.push(prediction.map(p => p.probability));
       if (predictionHistory.length > SMOOTHING_FRAMES) predictionHistory.shift();
 
-      // --- 平均確率計算 ---
       let avgProbabilities = new Array(maxPredictions).fill(0);
       for (let frame of predictionHistory) frame.forEach((p, i) => avgProbabilities[i] += p);
       avgProbabilities = avgProbabilities.map(p => p / predictionHistory.length);
 
-      // --- 最大クラス ---
       const maxIndex = avgProbabilities.indexOf(Math.max(...avgProbabilities));
       const maxProbability = avgProbabilities[maxIndex];
       const label = model.getClassLabels()[maxIndex];
@@ -169,7 +154,6 @@
       const resultDiv = document.getElementById("result");
       const now = Date.now();
 
-      // ===== ロック中 =====
       if (now < lockUntil && lockedLabel !== null) {
         setResultStyle(labelToType(lockedLabel));
         resultDiv.innerHTML =
@@ -177,17 +161,14 @@
         return;
       }
 
-      // ===== 「近づけて」判定（入力品質が低い） =====
-      // 1) 最大確率がかなり低い（遠い・暗い・ブレてるなど）
-      // 2) 不明が一定フレーム続く
+
       const isVeryLowConfidence = maxProbability < TOO_FAR_THRESHOLD;
 
-      // しきい値未満は「不明」扱いとしてカウント
       if (maxProbability < CONFIDENCE_THRESHOLD) unknownCount += 1;
       else unknownCount = 0;
 
       if (isVeryLowConfidence || unknownCount >= HINT_AFTER_UNKNOWN_FRAMES) {
-        // 確定系はリセット
+        
         lockedLabel = null;
         stableCount = 0;
         lastLabel = null;
@@ -197,8 +178,6 @@
         return;
       }
 
-      // ===== しきい値未満（ただの不明） =====
-      // ※ ここに来るのは maxProbability < 0.6 だけど「近づけて」条件には当たらないケース
       if (maxProbability < CONFIDENCE_THRESHOLD) {
         lockedLabel = null;
         stableCount = 0;
@@ -209,7 +188,6 @@
         return;
       }
 
-      // ===== 安定判定 =====
       if (label === lastLabel) stableCount += 1;
       else { lastLabel = label; stableCount = 1; }
 
@@ -218,7 +196,6 @@
         `判定中：<b>${label}</b>（信頼度 ${(maxProbability * 100).toFixed(1)}%） ` +
         `安定度 ${stableCount}/${STABLE_REQUIRED}`;
 
-      // ===== 確定 =====
       if (stableCount >= STABLE_REQUIRED) {
         lockedLabel = label;
         lockedConfidence = maxProbability;
@@ -228,7 +205,6 @@
         resultDiv.innerHTML =
           `判定：<b>${lockedLabel}</b>（信頼度 ${(lockedConfidence * 100).toFixed(1)}%）［確定］`;
 
-        // 確定した瞬間だけ（固定中に連打しない）
         const confirmKey = `${lockedLabel}-${Math.round(lockedConfidence * 1000)}`;
         if (confirmKey !== lastConfirmKey) {
           lastConfirmKey = confirmKey;
@@ -240,4 +216,5 @@
   </script>
 </body>
 </html>
+
 
